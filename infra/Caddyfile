@@ -1,0 +1,38 @@
+{
+    # email для ACME (подставь из env в install-скрипте)
+    email {$ACME_EMAIL}
+}
+
+{$APP_DOMAIN} {
+    encode gzip
+
+    @webhook path /api/webhook/telegram
+    header @webhook X-Telegram-Bot-Api-Secret-Token {$WEBHOOK_SECRET}
+
+    # Раздача статики/медиа напрямую
+    handle_path /static/* {
+        root * /srv/static
+        file_server
+    }
+    handle_path /media/* {
+        root * /srv/media
+        file_server
+    }
+
+    # Проксирование всего остального в Django
+    reverse_proxy web:8000
+
+    # Базовые заголовки безопасности
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "geolocation=(), microphone=()"
+    }
+
+    log {
+        output stdout
+        format json
+    }
+}
