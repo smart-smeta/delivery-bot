@@ -1,0 +1,5 @@
+*.lock merge=ours
+*.min.js merge=ours
+.env*    merge=union
+
+# Critical files additionally handled by scripts/resolve_conflicts.sh
