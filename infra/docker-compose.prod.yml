@@ -1,0 +1,160 @@
+version: "3.9"
+
+networks:
+  foodbot_net:
+
+volumes:
+  pgdata:
+  static:
+  media:
+
+services:
+  proxy:
+    image: caddy:2
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./infra/Caddyfile:/etc/caddy/Caddyfile:ro
+      - static:/srv/static:ro
+      - media:/srv/media:ro
+    ports:
+      - "80:80"
+      - "443:443"
+    networks: [foodbot_net]
+    environment:
+      - APP_DOMAIN=${APP_DOMAIN}
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET}
+      - ACME_EMAIL=${ACME_EMAIL}
+    depends_on:
+      web:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile # предполагается многостадийный Dockerfile
+    command: ["/bin/sh","-c","python manage.py migrate && python manage.py collectstatic --noinput && uvicorn config.asgi:application --host 0.0.0.0 --port 8000"]
+    restart: unless-stopped
+    mem_limit: "1024m"
+    cpus: "1.0"
+    user: "1000:1000"
+    tmpfs:
+      - /tmp
+    environment:
+      - DJANGO_DEBUG=False
+      - ALLOWED_HOSTS=${APP_DOMAIN}
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      - REDIS_URL=redis://redis:6379/0
+      - BOT_TOKEN=${BOT_TOKEN}
+      - BOT_ADMIN_IDS=${BOT_ADMIN_IDS}
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET}
+      - APP_BASE_URL=${APP_BASE_URL}
+      - WAREHOUSE_ADDRESS=${WAREHOUSE_ADDRESS}
+      - WAREHOUSE_COORDS=${WAREHOUSE_COORDS}
+    env_file:
+      - ../.env.prod
+    volumes:
+      - static:/app/staticfiles
+      - media:/app/media
+    networks: [foodbot_net]
+    healthcheck:
+      test: ["CMD-SHELL","curl -fsS http://localhost:8000/healthz || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 30s
+
+  bot:
+    build:
+      context: ./bot
+      dockerfile: Dockerfile
+    command: ["python","-m","bot.worker.main"]
+    restart: unless-stopped
+    mem_limit: "256m"
+    cpus: "0.5"
+    user: "1000:1000"
+    read_only: true
+    tmpfs:
+      - /tmp
+    env_file:
+      - ../.env.prod
+    networks: [foodbot_net]
+    depends_on:
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL","getent hosts web >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 3s
+      retries: 10
+      start_period: 30s
+
+  celery:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["celery","-A","config.celery_app","worker","-l","info"]
+    restart: unless-stopped
+    mem_limit: "512m"
+    cpus: "0.8"
+    user: "1000:1000"
+    read_only: true
+    tmpfs: [/tmp]
+    env_file:
+      - ../.env.prod
+    networks: [foodbot_net]
+    depends_on:
+      web:
+        condition: service_healthy
+
+  beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["celery","-A","config.celery_app","beat","-l","info"]
+    restart: unless-stopped
+    mem_limit: "256m"
+    cpus: "0.5"
+    user: "1000:1000"
+    read_only: true
+    tmpfs: [/tmp]
+    env_file:
+      - ../.env.prod
+    networks: [foodbot_net]
+    depends_on:
+      web:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    mem_limit: "128m"
+    cpus: "0.3"
+    networks: [foodbot_net]
+    healthcheck:
+      test: ["CMD","redis-cli","ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    mem_limit: "1024m"
+    cpus: "1.0"
+    networks: [foodbot_net]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    env_file:
+      - ../.env.prod
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL","pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
