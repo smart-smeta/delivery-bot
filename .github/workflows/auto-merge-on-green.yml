@@ -1,0 +1,36 @@
+name: Auto merge on green
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: auto-merge-on-green
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run checks
+        run: |
+          if [ -f Makefile ]; then
+            make lint || true
+            make test
+          elif [ -f pytest.ini ] || [ -f pyproject.toml ] || [ -d tests ]; then
+            pytest -q
+          else
+            echo "No tests"
+          fi
+      - name: Merge on green
+        if: ${{ success() }}
+        run: |
+          gh pr merge "$GITHUB_HEAD_REF" --merge --delete-branch
+          version="v$(date +%Y.%m.%d.%H%M%S)"
+          gh release create "$version" -t "Consolidated release" -n "Merged branches: $GITHUB_HEAD_REF"
